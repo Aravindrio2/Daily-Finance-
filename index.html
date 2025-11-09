@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#6366f1">
+    <meta name="description" content="Daily Finance Tracker - Manage customer payments, track loans, and generate reports. Works on mobile and desktop.">
+    <title>Daily Finance Application</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+        
+        // Firebase configuration - USER NEEDS TO ADD THEIR CONFIG
+        // Get this from Firebase Console: https://console.firebase.google.com
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+        
+        // Initialize Firebase only if config is valid
+        let app, db;
+        let useCloudSync = false;
+        
+        try {
+            if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY") {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                useCloudSync = true;
+                window.firebaseDb = db;
+                window.useCloudSync = true;
+                console.log('✅ Cloud sync enabled');
+            } else {
+                console.log('ℹ️ Cloud sync not configured - using local storage');
+                window.useCloudSync = false;
+            }
+        } catch (error) {
+            console.error('Firebase initialization error:', error);
+            window.useCloudSync = false;
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <div class="header-title">
+                    <h1>💰 Daily Finance Tracker</h1>
+                    <p class="header-subtitle">Manage your customer payments efficiently</p>
+                </div>
+                <div class="header-actions">
+                    <div class="sync-status" id="syncStatus">
+                        <span class="sync-icon" id="syncIcon">🔄</span>
+                        <span class="sync-text" id="syncText">Local</span>
+                    </div>
+                    <button class="btn btn-primary btn-export" id="exportBtn">
+                        <span>📄</span> Export to PDF
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <div class="customer-form-section">
+            <div class="section-header">
+                <h2 id="formTitle">➕ Add New Customer</h2>
+                <p class="section-description">Enter customer details to start tracking payments</p>
+            </div>
+            <form id="customerForm">
+                <input type="hidden" id="customerId">
+                <div class="form-group">
+                    <label for="customerName">Customer Name *</label>
+                    <input type="text" id="customerName" required>
+                </div>
+                <div class="form-group">
+                    <label for="customerArea">Area *</label>
+                    <input type="text" id="customerArea" required>
+                </div>
+                <div class="form-group">
+                    <label for="customerPhone">Phone Number *</label>
+                    <input type="tel" id="customerPhone" required>
+                </div>
+                <div class="form-group">
+                    <label for="loanAmount">Loan Amount (₹) *</label>
+                    <input type="number" id="loanAmount" min="0" step="0.01" required>
+                </div>
+                <div class="form-group">
+                    <label for="paymentPlan">Payment Plan</label>
+                    <select id="paymentPlan" onchange="updatePlanFields()">
+                        <option value="none">No Plan (Manual Entry)</option>
+                        <option value="10">10 Days Plan</option>
+                        <option value="30">30 Days Plan</option>
+                        <option value="custom">Custom Days</option>
+                    </select>
+                    <small class="form-hint">Select a plan to auto-create daily payment entries</small>
+                </div>
+                <div class="form-group" id="customDaysGroup" style="display: none;">
+                    <label for="customDays">Number of Days *</label>
+                    <input type="number" id="customDays" min="1" placeholder="e.g., 15, 45, 60">
+                </div>
+                <div class="form-group" id="dailyAmountGroup" style="display: none;">
+                    <label for="dailyAmount">Daily Payment Amount (₹) *</label>
+                    <input type="number" id="dailyAmount" min="0" step="0.01" placeholder="Amount per day">
+                </div>
+                <div class="form-group" id="planStartDateGroup" style="display: none;">
+                    <label for="planStartDate">Plan Start Date *</label>
+                    <input type="date" id="planStartDate">
+                </div>
+                <div id="planPreview" class="plan-preview" style="display: none;"></div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" id="submitBtn">Add Customer</button>
+                    <button type="button" class="btn btn-secondary" id="cancelBtn" style="display: none;">Cancel</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="customers-section">
+            <div class="section-header">
+                <h2>👥 Customers</h2>
+                <p class="section-description">View and manage all your customers</p>
+            </div>
+            <div class="search-container">
+                <div class="search-box">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="customerSearch" placeholder="Search customers by name, area, or phone..." autocomplete="off">
+                    <button type="button" class="search-clear" id="clearSearch" style="display: none;">✕</button>
+                </div>
+                <div class="search-results-info" id="searchResultsInfo"></div>
+            </div>
+            <!-- Mobile Card View -->
+            <div id="mobileCardView" class="mobile-cards">
+                <!-- Cards will be inserted here -->
+            </div>
+            
+            <!-- Desktop Table View -->
+            <div class="table-container">
+                <table id="customersTable">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Area</th>
+                            <th>Phone</th>
+                            <th>Loan Amount</th>
+                            <th>Total Paid</th>
+                            <th>Balance Amount</th>
+                            <th>Today's Status</th>
+                            <th>Quick Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="customersTableBody">
+                        <!-- Customers will be inserted here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Payment Modal -->
+    <div id="paymentModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>💵 Add Payment</h2>
+            <p class="info-text" id="paymentInfoText">Enter payment details below</p>
+            <form id="paymentForm">
+                <input type="hidden" id="paymentCustomerId">
+                <div class="form-group">
+                    <label for="paymentAmount">Payment Amount (₹) *</label>
+                    <input type="number" id="paymentAmount" min="0" step="0.01" required>
+                    <small class="form-hint">Press Enter to quickly submit</small>
+                </div>
+                <div class="form-group">
+                    <label for="paymentDate">Payment Date *</label>
+                    <input type="date" id="paymentDate" required>
+                    <div class="quick-date-buttons">
+                        <button type="button" class="btn-quick-date" onclick="setQuickDate('today')">Today</button>
+                        <button type="button" class="btn-quick-date" onclick="setQuickDate('yesterday')">Yesterday</button>
+                        <button type="button" class="btn-quick-date" onclick="setQuickDate('2days')">2 Days Ago</button>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">✅ Add Payment</button>
+                    <button type="button" class="btn btn-secondary" id="closePaymentModal">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Payment History Modal -->
+    <div id="historyModal" class="modal">
+        <div class="modal-content modal-large">
+            <span class="close">&times;</span>
+            <h2>Payment History</h2>
+            <div id="historyContent">
+                <!-- Payment history will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Payment Modal -->
+    <div id="editPaymentModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Edit Payment</h2>
+            <form id="editPaymentForm">
+                <input type="hidden" id="editPaymentCustomerId">
+                <input type="hidden" id="editPaymentIndex">
+                <div class="form-group">
+                    <label for="editPaymentAmount">Payment Amount (₹) *</label>
+                    <input type="number" id="editPaymentAmount" min="0" step="0.01" required>
+                </div>
+                <div class="form-group">
+                    <label for="editPaymentDate">Payment Date *</label>
+                    <input type="date" id="editPaymentDate" required>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Update Payment</button>
+                    <button type="button" class="btn btn-secondary" id="closeEditPaymentModal">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Bulk Payment Modal (Consecutive Days - Fixed Amount) -->
+    <div id="bulkPaymentModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>📅 Bulk Payment (Consecutive Days)</h2>
+            <p class="info-text">Add payments for multiple consecutive days with the same amount</p>
+            <form id="bulkPaymentForm">
+                <input type="hidden" id="bulkPaymentCustomerId">
+                <div class="form-group">
+                    <label for="bulkStartDate">Start Date *</label>
+                    <input type="date" id="bulkStartDate" required>
+                </div>
+                <div class="form-group">
+                    <label for="bulkDays">Number of Days *</label>
+                    <input type="number" id="bulkDays" min="1" required placeholder="e.g., 4, 5, 10">
+                </div>
+                <div class="form-group">
+                    <label for="bulkAmount">Amount per Day (₹) *</label>
+                    <input type="number" id="bulkAmount" min="0" step="0.01" required>
+                </div>
+                <div id="bulkPreview" class="bulk-preview"></div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Add All Payments</button>
+                    <button type="button" class="btn btn-secondary" id="closeBulkPaymentModal">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Flexible Bulk Payment Modal (Multiple Dates - Different Amounts) -->
+    <div id="flexibleBulkPaymentModal" class="modal">
+        <div class="modal-content modal-large">
+            <span class="close">&times;</span>
+            <h2>💵 Flexible Bulk Payment</h2>
+            <p class="info-text">Add payments for different dates with different amounts. Perfect for irregular payment patterns.</p>
+            
+            <!-- Mode Toggle -->
+            <div class="bulk-mode-toggle">
+                <button type="button" class="btn-mode-toggle active" id="manualModeBtn" onclick="switchBulkMode('manual')">
+                    ✏️ Manual Entry
+                </button>
+                <button type="button" class="btn-mode-toggle" id="importModeBtn" onclick="switchBulkMode('import')">
+                    📋 Bulk Import
+                </button>
+            </div>
+            
+            <form id="flexibleBulkPaymentForm">
+                <input type="hidden" id="flexibleBulkPaymentCustomerId">
+                
+                <!-- Manual Entry Mode -->
+                <div id="manualEntryMode" class="bulk-mode-content">
+                    <div id="paymentRowsContainer" class="payment-rows-container">
+                        <!-- Payment rows will be dynamically added here -->
+                    </div>
+                    
+                    <div class="bulk-payment-actions">
+                        <button type="button" class="btn btn-success" id="addPaymentRowBtn" onclick="addPaymentRow()">
+                            ➕ Add Another Payment
+                        </button>
+                        <button type="button" class="btn btn-secondary" id="clearAllRowsBtn" onclick="clearAllPaymentRows()">
+                            🗑️ Clear All
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Bulk Import Mode -->
+                <div id="importMode" class="bulk-mode-content" style="display: none;">
+                    <!-- Photo Upload Section -->
+                    <div class="form-group" style="margin-bottom: 25px;">
+                        <label for="photoUpload">📷 Upload Photo of Payment Details</label>
+                        <div class="photo-upload-container">
+                            <input type="file" id="photoUpload" accept="image/*" capture="environment" style="display: none;" onchange="handlePhotoUpload(event)">
+                            <button type="button" class="btn btn-primary" onclick="document.getElementById('photoUpload').click()" style="width: 100%; padding: 15px;">
+                                📸 Choose Photo or Take Picture
+                            </button>
+                            <div id="photoPreview" style="margin-top: 15px; display: none;">
+                                <img id="previewImage" style="max-width: 100%; max-height: 300px; border-radius: 10px; border: 2px solid #6366f1;">
+                                <div style="margin-top: 10px;">
+                                    <button type="button" class="btn btn-success" onclick="processPhotoOCR()" id="processPhotoBtn">
+                                        🔍 Extract Text from Photo
+                                    </button>
+                                    <button type="button" class="btn btn-secondary" onclick="clearPhoto()">
+                                        🗑️ Remove Photo
+                                    </button>
+                                </div>
+                                <div id="ocrProgress" style="display: none; margin-top: 15px; padding: 15px; background: #f0f9ff; border-radius: 10px; border: 2px solid #3b82f6;">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <div class="spinner" style="border: 3px solid #f3f4f6; border-top: 3px solid #3b82f6; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite;"></div>
+                                        <div>
+                                            <strong>Processing image...</strong>
+                                            <div id="ocrStatus" style="font-size: 13px; color: #666; margin-top: 5px;">Initializing OCR engine...</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <small class="form-hint">💡 Take a photo or upload an image of your payment notes. The system will automatically extract text and convert it to payment entries!</small>
+                    </div>
+                    
+                    <div style="text-align: center; margin: 20px 0; color: #666; font-weight: 600;">OR</div>
+                    
+                    <!-- Text Paste Section -->
+                    <div class="form-group">
+                        <label for="bulkImportText">📝 Or Paste Payment Data from Notes/Text</label>
+                        <textarea id="bulkImportText" rows="10" placeholder="Paste your payment details here - the system will automatically extract dates and amounts!&#10;&#10;Examples:&#10;Jan 5 2024 paid 500&#10;January 8, 2024 - 600 rupees&#10;12/01/2024 amount 500&#10;&#10;Or paste OCR text from photos here!"></textarea>
+                        <small class="form-hint">💡 Smart Parser: Automatically extracts dates and amounts from any format. Works with notes, Excel, and text!</small>
+                    </div>
+                    <div class="bulk-import-actions">
+                        <button type="button" class="btn btn-primary" onclick="parseAndImportPayments()">
+                            📥 Import Payments
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="document.getElementById('bulkImportText').value = ''">
+                            🗑️ Clear
+                        </button>
+                    </div>
+                    <div id="importPreview" class="bulk-preview"></div>
+                </div>
+                
+                <div id="flexibleBulkPreview" class="bulk-preview"></div>
+                
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">✅ Add All Payments</button>
+                    <button type="button" class="btn btn-secondary" id="closeFlexibleBulkPaymentModal">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Bulk Update All Payments Modal -->
+    <div id="bulkUpdateModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>⚡ Bulk Update All Payments</h2>
+            <p class="info-text">Update all payment amounts for this customer at once</p>
+            <form id="bulkUpdateForm">
+                <input type="hidden" id="bulkUpdateCustomerId">
+                <div class="form-group">
+                    <label for="updateAllAmount">New Amount for All Payments (₹) *</label>
+                    <input type="number" id="updateAllAmount" min="0" step="0.01" required>
+                    <small class="form-hint">This will update all existing payment amounts</small>
+                </div>
+                <div id="updatePreview" class="bulk-preview"></div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">✅ Update All Payments</button>
+                    <button type="button" class="btn btn-secondary" id="closeBulkUpdateModal">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
